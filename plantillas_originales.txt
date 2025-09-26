@@ -1,0 +1,1078 @@
+Generador de stacks para instalar herramientas: traekic, portainer, redis, Postgres, n8n,  y chatwoot. portainer.
+
+Estos códigos son para Docker swram, la idea es analizar cual se deberá instalar primero y dejarlo como plantilla:
+
+
+Plantilla original para traekic:
+
+version: '3.8'
+
+services:
+  traefik:
+    image: traefik:latest
+    restart: unless-stopped
+    command:
+      - "--log.level=DEBUG"
+      - "--api=true"
+      - "--api.dashboard=true"
+      - "--providers.swarm.endpoint=unix:///var/run/docker.sock"
+      - "--providers.swarm.exposedbydefault=false"
+      - "--providers.swarm.network=frontend"
+      # Entrypoints
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.websecure.transport.respondingTimeouts.idleTimeout=3600"
+      # Redirección HTTP a HTTPS
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      # Certbot/Let's Encrypt
+      - "--certificatesresolvers.le.acme.httpchallenge=true"
+      - "--certificatesresolvers.le.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.le.acme.email=tu-email@gmail.com"
+      - "--certificatesresolvers.le.acme.storage=/letsencrypt/acme.json"
+      
+    ports:
+      - 80:80
+      - 443:443
+      
+    networks:
+      - frontend
+      
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_letsencrypt:/letsencrypt
+
+    deploy:
+      mode: global
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.traefik.rule=Host(`proxy.pbxai.online`)
+        - traefik.http.routers.traefik.entrypoints=websecure
+        - traefik.http.routers.traefik.tls.certresolver=le
+        - traefik.http.routers.traefik.service=api@internal
+        # Autenticación para entrar a Dashboard (usuario: admin, contraseña: password123) para generar una nueva contraseña usa el comando: echo $(htpasswd -nB admin) | sed -e s/\\$/\\$\\$/g
+        - traefik.http.routers.traefik.middlewares=auth
+        - traefik.http.middlewares.auth.basicauth.users=admin:$$2y$$05$$4ouF.ij352o2TL6c5Aj0j.KJqwvNDI4omfB/MAI3O8oX95C26kELq
+        - "traefik.http.services.dummy-svc.loadbalancer.server.port=9999"
+
+networks:
+  frontend:
+    external: true
+
+volumes:
+  traefik_letsencrypt:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/traefik/letsencrypt
+      o: bind
+
+
+Plantilla original para portainer:
+
+version: "3.7"
+services:
+
+  agent:
+    image: portainer/agent:latest 
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/lib/docker/volumes:/var/lib/docker/volumes
+
+    networks:
+      - frontend
+
+    deploy:
+      mode: global
+      placement:
+        constraints: [node.platform.os == linux]
+
+  portainer:
+    image: portainer/portainer-ce:latest 
+    command: -H tcp://tasks.agent:9001 --tlsskipverify
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+
+    networks:
+      - frontend
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.portainer.rule=Host(`admin.pbxai.online`)" 
+        - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+        - "traefik.http.routers.portainer.tls.certresolver=le"
+        - "traefik.http.routers.portainer.service=portainer"
+        - "traefik.docker.network=frontend"
+        - "traefik.http.routers.portainer.entrypoints=websecure"
+        - "traefik.http.routers.portainer.priority=1"
+
+networks:
+  frontend:
+    external: true
+
+volumes: 
+  portainer_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/portainer/portainer_data
+      o: bind
+
+
+Plantilla original para redis:
+
+version: '3.7'
+
+services:
+  redis-server:
+    image: redis:latest
+    command: redis-server --loglevel warning
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+
+    volumes:
+      - redis_cache:/data
+      
+    networks:
+      - backend
+
+  redisinsight:
+    image: redislabs/redisinsight:latest
+    deploy:
+      mode: replicated
+      replicas: 1
+      labels:
+       - "traefik.enable=true"
+       - "traefik.http.routers.redisinsight.rule=Host(`redis.pbxai.online`)"
+       - "traefik.http.routers.redisinsight.service=redisinsight"
+       - "traefik.http.routers.redisinsight.entrypoints=websecure"
+       - "traefik.http.routers.redisinsight.tls.certresolver=le"
+       - "traefik.http.routers.redisinsight.tls=true"
+       - "traefik.http.services.redisinsight.loadbalancer.server.port=5540"
+
+    volumes:
+      - redisinsight:/data
+      
+    networks:
+      - backend
+      - frontend
+
+networks:
+  backend:
+    external: true
+  frontend:
+    external: true
+
+volumes:
+  redis_cache:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/redis/redis_cache
+      o: bind
+      
+  redisinsight:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/redis/redisinsight
+      o: bind
+
+
+Plantilla original para Postgres:
+
+version: '3.8'
+
+services:
+  postgres-server:
+    image: postgres:latest
+
+    environment:
+    
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: Diever3342
+      POSTGRES_DB: default_db
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      
+    networks:
+      - backend
+      
+    restart: unless-stopped
+    
+networks:
+  backend:
+    external: true
+
+volumes:
+  postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/postgres/postgres_data
+      o: bind
+
+
+Plantilla original para n8n:
+
+version: '3.8'
+
+services:
+  'n8n-db':
+    image: docker.io/bitnami/postgresql:16
+    restart: always
+    user: root
+
+    environment:
+
+      - POSTGRESQL_USERNAME=postgres
+      - POSTGRESQL_DATABASE=n8n
+      - POSTGRESQL_PASSWORD=Diever3342
+
+    networks:
+      - backend
+      
+    deploy:
+      replicas: 1
+      placement:
+        constraints: [node.role == manager]
+
+    volumes:
+      - n8n_db:/bitnami/postgresql
+
+  n8n_editor:
+    image: n8nio/n8n:latest
+    restart: always
+    user: root
+    #command: editor
+    environment:
+      - N8N_ENCRYPTION_KEY=COcQyuOO7j7n7SsyEZqTmARXOPb08TAw
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=n8n-db
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=postgres
+      - DB_POSTGRESDB_PASSWORD=Diever3342
+      - N8N_PROTOCOL=https
+      - N8N_HOST=n8.pbxai.online
+      - N8N_EDITOR_BASE_URL=https://n8.pbxai.online
+      - WEBHOOK_URL=https://webhook.n8.pbxai.online
+      - NODE_ENV=production
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis-server
+      - QUEUE_BULL_REDIS_DB=2
+      - QUEUE_BULL_REDIS_PORT=6379
+      # - QUEUE_BULL_REDIS_PASSWORD=Diever3342
+      - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_SECURE_COOKIE=false
+      
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.n8n_editor.rule=Host(`n8.pbxai.online`)
+        - traefik.http.routers.n8n_editor.service=n8n_editor
+        - traefik.http.routers.n8n_editor.entrypoints=websecure
+        - traefik.http.routers.n8n_editor.tls.certresolver=le
+        - traefik.http.routers.n8n_editor.tls=true
+        - traefik.http.services.n8n_editor.loadbalancer.server.port=5678
+        
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - n8n_local-files:/files
+    
+    networks:
+      - frontend
+      - backend
+
+  n8n_worker:
+    image: n8nio/n8n:latest
+    restart: always
+    user: root
+    command: worker --concurrency=5
+    environment:
+      - N8N_ENCRYPTION_KEY=COcQyuOO7j7n7SsyEZqTmARXOPb08TAw
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=n8n-db
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=postgres
+      - DB_POSTGRESDB_PASSWORD=Diever3342
+      - N8N_PROTOCOL=https
+      - N8N_HOST=n8.pbxai.online
+      - N8N_EDITOR_BASE_URL=https://n8.pbxai.online
+      - WEBHOOK_URL=https://webhook.n8.pbxai.online
+      - NODE_ENV=production
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis-server
+      - QUEUE_BULL_REDIS_DB=2
+      - QUEUE_BULL_REDIS_PORT=6379
+      # - QUEUE_BULL_REDIS_PASSWORD=Diever3342
+      - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_SECURE_COOKIE=false
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - n8n_local-files:/files
+      
+    networks:
+      - backend
+
+  n8n_webhook:
+    image: n8nio/n8n:latest
+    restart: always
+    user: root
+    command: webhook
+    environment:
+      - N8N_ENCRYPTION_KEY=COcQyuOO7j7n7SsyEZqTmARXOPb08TAw
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=n8n-db
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=n8n
+      - DB_POSTGRESDB_USER=postgres
+      - DB_POSTGRESDB_PASSWORD=Diever3342
+      - N8N_PROTOCOL=https
+      - N8N_HOST=n8.pbxai.online
+      - N8N_EDITOR_BASE_URL=https://n8.pbxai.online
+      - WEBHOOK_URL=https://webhook.n8.pbxai.online
+      - NODE_ENV=production
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - EXECUTIONS_MODE=queue
+      - QUEUE_BULL_REDIS_HOST=redis-server
+      - QUEUE_BULL_REDIS_DB=2
+      - QUEUE_BULL_REDIS_PORT=6379
+      # - QUEUE_BULL_REDIS_PASSWORD=Diever3342
+      - OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_SECURE_COOKIE=false
+
+    deploy:
+      mode: replicated
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+
+      labels:
+        - traefik.enable=true
+        - traefik.http.routers.n8n_webhook.rule=Host(`webhook.n8.pbxai.online`)
+        - traefik.http.routers.n8n_webhook.service=n8n_webhook
+        - traefik.http.routers.n8n_webhook.entrypoints=websecure
+        - traefik.http.routers.n8n_webhook.tls.certresolver=le
+        - traefik.http.routers.n8n_webhook.tls=true
+        - traefik.http.services.n8n_webhook.loadbalancer.server.port=5678
+      
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - n8n_local-files:/files
+
+    networks:
+      - frontend
+      - backend
+      
+networks:
+    frontend:
+      external: true
+    backend:
+      external: true
+
+volumes:
+  n8n_db:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/n8n/db
+      o: bind
+
+  n8n_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/n8n/data
+      o: bind
+
+  n8n_local-files:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/n8n/local-files
+      o: bind
+
+Plantilla original para chatwoot:
+
+version: '3.8'
+
+services:
+  rails:
+    image: chatwoot/chatwoot:latest
+    environment:
+      # Configuración Base
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - SECRET_KEY_BASE=COcQyuOO7j7n7SsyEZqTmARXOPb08TAw
+      - FRONTEND_URL=https://chat.pbxai.online
+      - WEBSOCKET_URL=wss://chat.pbxai.online/cable
+      - FORCE_SSL=true
+      
+      # Autenticación y Registro
+      - ENABLE_ACCOUNT_SIGNUP=false
+      - DEFAULT_LOCALE=
+      - HELPCENTER_URL=
+      
+      # Redis
+      - REDIS_URL=redis://redis-server:6379/4
+      - REDIS_PASSWORD=
+      - REDIS_SENTINELS=
+      - REDIS_SENTINEL_MASTER_NAME=
+      - REDIS_SENTINEL_PASSWORD=
+      - REDIS_OPENSSL_VERIFY_MODE=
+      
+      # PostgreSQL
+      - POSTGRES_DATABASE=chatwoot
+      - POSTGRES_HOST=chatwoot-postgres
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=Diever3342
+      - POSTGRES_STATEMENT_TIMEOUT=14s
+      - RAILS_MAX_THREADS=5
+      
+      # Email/SMTP
+      - MAILER_SENDER_EMAIL=Chatwoot <correo@corporativo>
+      - SMTP_DOMAIN=dominio-del-servidor-smtp
+      - SMTP_ADDRESS=mail.dominio.com
+      - SMTP_PORT=587
+      - SMTP_USERNAME=email-del-smtp
+      - SMTP_PASSWORD=contraseña-smtp
+      - SMTP_AUTHENTICATION=plain
+      - SMTP_ENABLE_STARTTLS_AUTO=true
+      - SMTP_OPENSSL_VERIFY_MODE=peer
+      - SMTP_TLS=
+      - SMTP_SSL=
+      
+      # Almacenamiento
+      - ACTIVE_STORAGE_SERVICE=local
+      - S3_BUCKET_NAME=
+      - AWS_ACCESS_KEY_ID=
+      - AWS_SECRET_ACCESS_KEY=
+      - AWS_REGION=
+      
+      - S3_ACCESS_KEY=key-de-minio
+      - S3_SECRET_KEY=secret-de-minio
+      - S3_BUCKET=chatwoot
+      - S3_ENDPOINT=subdominioapi.minio.com #subdominio de la api de minio
+      
+      - DIRECT_UPLOADS_ENABLED=
+      
+      # Logs
+      - RAILS_LOG_TO_STDOUT=true
+      - LOG_LEVEL=info
+      - LOG_SIZE=500
+      - LOGRAGE_ENABLED=
+      
+      # Integraciones
+      - FB_VERIFY_TOKEN=
+      - FB_APP_SECRET=
+      - FB_APP_ID=
+      - IG_VERIFY_TOKEN=
+      - TWITTER_APP_ID=
+      - TWITTER_CONSUMER_KEY=
+      - TWITTER_CONSUMER_SECRET=
+      - TWITTER_ENVIRONMENT=
+      - SLACK_CLIENT_ID=
+      - SLACK_CLIENT_SECRET=
+      - GOOGLE_OAUTH_CLIENT_ID=
+      - GOOGLE_OAUTH_CLIENT_SECRET=
+      - GOOGLE_OAUTH_CALLBACK_URL=
+      - AZURE_APP_ID=
+      - AZURE_APP_SECRET=
+      
+      # Mobile
+      - IOS_APP_ID=L7YLMN4634.com.chatwoot.app
+      - ANDROID_BUNDLE_ID=com.chatwoot.app
+      - ANDROID_SHA256_CERT_FINGERPRINT=AC:73:8E:DE:EB:56:EA:CC:10:87:02:A7:65:37:7B:38:D4:5D:D4:53:F8:3B:FB:D3:C6:28:64:1D:AA:08:1E:D8
+      - VAPID_PUBLIC_KEY=
+      - VAPID_PRIVATE_KEY=
+      - FCM_SERVER_KEY=
+      
+      # Seguridad
+      - ENABLE_RACK_ATTACK=true
+      - RACK_ATTACK_LIMIT=300
+      - ENABLE_RACK_ATTACK_WIDGET_API=true
+      
+      # Monitoreo
+      - SENTRY_DSN=
+      - ELASTIC_APM_SERVER_URL=
+      - ELASTIC_APM_SECRET_TOKEN=
+      - SCOUT_KEY=
+      - SCOUT_NAME=
+      - SCOUT_MONITOR=
+      - NEW_RELIC_LICENSE_KEY=
+      - NEW_RELIC_APPLICATION_LOGGING_ENABLED=
+      - DD_TRACE_AGENT_URL=
+      
+      # IA y características avanzadas
+      - OPENAI_API_KEY=
+      - REMOVE_STALE_CONTACT_INBOX_JOB_STATUS=false
+      - IP_LOOKUP_API_KEY=
+      - STRIPE_SECRET_KEY=
+      - STRIPE_WEBHOOK_SECRET=
+      
+      # Webhooks Email
+      - RAILS_INBOUND_EMAIL_SERVICE=
+      - RAILS_INBOUND_EMAIL_PASSWORD=
+      - MAILGUN_INGRESS_SIGNING_KEY=
+      - MANDRILL_INGRESS_API_KEY=
+      - MAILER_INBOUND_EMAIL_DOMAIN=correo-para recibir respuestas
+      
+      # Otros
+      - ASSET_CDN_HOST=
+      - CW_API_ONLY_SERVER=
+      - ENABLE_PUSH_RELAY_SERVER=true
+      - SIDEKIQ_CONCURRENCY=10
+      
+    volumes:
+      - chatwoot_storage:/app/storage
+      
+    entrypoint: docker/entrypoints/rails.sh
+    command: ['bundle', 'exec', 'rails', 's', '-p', '3000', '-b', '0.0.0.0']
+    
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.chatwoot.rule=Host(`chat.pbxai.online`)"
+        - "traefik.http.routers.chatwoot.entrypoints=websecure"
+        - "traefik.http.routers.chatwoot.tls=true"
+        - "traefik.http.routers.chatwoot.tls.certresolver=le"
+        - "traefik.http.services.chatwoot.loadbalancer.server.port=3000"
+        - "traefik.http.middlewares.sslheader.headers.customrequestheaders.X-Forwarded-Proto=https"
+        - "traefik.http.routers.chatwoot.middlewares=sslheader"
+
+    networks:
+      - frontend
+      - backend
+
+  sidekiq:
+    image: chatwoot/chatwoot:latest
+    environment:
+      # Configuración Base
+      - NODE_ENV=production
+      - RAILS_ENV=production
+      - INSTALLATION_ENV=docker
+      - SECRET_KEY_BASE=COcQyuOO7j7n7SsyEZqTmARXOPb08TAw
+      - FRONTEND_URL=https://chat.pbxai.online
+      - WEBSOCKET_URL=wss://chat.pbxai.online/cable
+      - FORCE_SSL=true
+      
+      # Autenticación y Registro
+      - ENABLE_ACCOUNT_SIGNUP=false
+      - DEFAULT_LOCALE=
+      - HELPCENTER_URL=
+      
+      # Redis
+      - REDIS_URL=redis://redis-server:6379/4
+      - REDIS_PASSWORD=
+      - REDIS_SENTINELS=
+      - REDIS_SENTINEL_MASTER_NAME=
+      - REDIS_SENTINEL_PASSWORD=
+      - REDIS_OPENSSL_VERIFY_MODE=
+      
+      # PostgreSQL
+      - POSTGRES_DATABASE=chatwoot
+      - POSTGRES_HOST=chatwoot-postgres
+      - POSTGRES_USERNAME=postgres
+      - POSTGRES_PASSWORD=Diever3342
+      - POSTGRES_STATEMENT_TIMEOUT=14s
+      - RAILS_MAX_THREADS=5
+      
+      # Email/SMTP
+      - MAILER_SENDER_EMAIL=Chatwoot <correo@corporativo>
+      - SMTP_DOMAIN=dominio-del-servidor-smtp
+      - SMTP_ADDRESS=mail.dominio.com
+      - SMTP_PORT=587
+      - SMTP_USERNAME=email-del-smtp
+      - SMTP_PASSWORD=contraseña-smtp
+      - SMTP_AUTHENTICATION=plain
+      - SMTP_ENABLE_STARTTLS_AUTO=true
+      - SMTP_OPENSSL_VERIFY_MODE=peer
+      - SMTP_TLS=
+      - SMTP_SSL=
+      
+      # Almacenamiento
+      - ACTIVE_STORAGE_SERVICE=local
+      - S3_BUCKET_NAME=
+      - AWS_ACCESS_KEY_ID=
+      - AWS_SECRET_ACCESS_KEY=
+      - AWS_REGION=
+      
+      - S3_ACCESS_KEY=key-de-minio
+      - S3_SECRET_KEY=secret-de-minio
+      - S3_BUCKET=chatwoot
+      - S3_ENDPOINT=subdominioapi.minio.com #subdominio de la api de minio
+      
+      - DIRECT_UPLOADS_ENABLED=
+      
+      # Logs
+      - RAILS_LOG_TO_STDOUT=true
+      - LOG_LEVEL=info
+      - LOG_SIZE=500
+      - LOGRAGE_ENABLED=
+      
+      # Integraciones
+      - FB_VERIFY_TOKEN=
+      - FB_APP_SECRET=
+      - FB_APP_ID=
+      - IG_VERIFY_TOKEN=
+      - TWITTER_APP_ID=
+      - TWITTER_CONSUMER_KEY=
+      - TWITTER_CONSUMER_SECRET=
+      - TWITTER_ENVIRONMENT=
+      - SLACK_CLIENT_ID=
+      - SLACK_CLIENT_SECRET=
+      - GOOGLE_OAUTH_CLIENT_ID=
+      - GOOGLE_OAUTH_CLIENT_SECRET=
+      - GOOGLE_OAUTH_CALLBACK_URL=
+      - AZURE_APP_ID=
+      - AZURE_APP_SECRET=
+      
+      # Mobile
+      - IOS_APP_ID=L7YLMN4634.com.chatwoot.app
+      - ANDROID_BUNDLE_ID=com.chatwoot.app
+      - ANDROID_SHA256_CERT_FINGERPRINT=AC:73:8E:DE:EB:56:EA:CC:10:87:02:A7:65:37:7B:38:D4:5D:D4:53:F8:3B:FB:D3:C6:28:64:1D:AA:08:1E:D8
+      - VAPID_PUBLIC_KEY=
+      - VAPID_PRIVATE_KEY=
+      - FCM_SERVER_KEY=
+      
+      # Seguridad
+      - ENABLE_RACK_ATTACK=true
+      - RACK_ATTACK_LIMIT=300
+      - ENABLE_RACK_ATTACK_WIDGET_API=true
+      
+      # Monitoreo
+      - SENTRY_DSN=
+      - ELASTIC_APM_SERVER_URL=
+      - ELASTIC_APM_SECRET_TOKEN=
+      - SCOUT_KEY=
+      - SCOUT_NAME=
+      - SCOUT_MONITOR=
+      - NEW_RELIC_LICENSE_KEY=
+      - NEW_RELIC_APPLICATION_LOGGING_ENABLED=
+      - DD_TRACE_AGENT_URL=
+      
+      # IA y características avanzadas
+      - OPENAI_API_KEY=
+      - REMOVE_STALE_CONTACT_INBOX_JOB_STATUS=false
+      - IP_LOOKUP_API_KEY=
+      - STRIPE_SECRET_KEY=
+      - STRIPE_WEBHOOK_SECRET=
+      
+      # Webhooks Email
+      - RAILS_INBOUND_EMAIL_SERVICE=
+      - RAILS_INBOUND_EMAIL_PASSWORD=
+      - MAILGUN_INGRESS_SIGNING_KEY=
+      - MANDRILL_INGRESS_API_KEY=
+      - MAILER_INBOUND_EMAIL_DOMAIN=correo-para recibir respuestas
+      
+      # Otros
+      - ASSET_CDN_HOST=
+      - CW_API_ONLY_SERVER=
+      - ENABLE_PUSH_RELAY_SERVER=true
+      - SIDEKIQ_CONCURRENCY=10
+    
+    volumes:
+      - chatwoot_storage:/app/storage
+      
+    command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
+    
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+
+    networks:
+      - backend
+
+  chatwoot-postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      - POSTGRES_DB=chatwoot
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=Diever3342
+      
+    volumes:
+      - chatwoot_postgres:/var/lib/postgresql/data
+      
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        
+    networks:
+      - backend
+
+networks:
+  frontend:
+    external: true
+  backend:
+    external: true
+
+volumes:
+  chatwoot_storage:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/chatwoot/chatwoot_storage
+      o: bind
+  chatwoot_postgres:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/chatwoot/postgres_data
+      o: bind
+
+Plantilla original evoapi
+
+version: '3'
+
+services:
+  evolution-api:
+    container_name: evolution-api
+    image: evoapicloud/evolution-api:latest
+    restart: always
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.evolution-api.rule=Host(`evoapi.pbxai.online`)"
+        - "traefik.http.routers.evolution-api.entrypoints=websecure"
+        - "traefik.http.routers.evolution-api.tls=true"
+        - "traefik.http.routers.evolution-api.tls.certresolver=le"
+        - "traefik.http.services.evolution-api.loadbalancer.server.port=8080"
+        - "traefik.docker.network=frontend"
+
+    volumes:
+      - evolution_instances:/evolution/instances
+      
+    networks:
+      - frontend
+      - backend
+      
+    environment:
+      # Evolution API Configuration
+      - SUBDOMAIN=evoapi
+      - DOMAIN=pbxai.online
+      - PASSWORD=Diever3342
+      - SECRET_KEY=COcQyuOO7j7n7SsyEZqTmARXOPb08TAw
+      - SERVER_TYPE=http
+      - SERVER_PORT=8080
+      - SERVER_URL=https://evoapi.pbxai.online
+      - SENTRY_DSN=
+      # Cors Configuration
+      - CORS_ORIGIN=*
+      - CORS_METHODS=GET,POST,PUT,DELETE
+      - CORS_CREDENTIALS=true
+      # Logging Configuration
+      - LOG_LEVEL=ERROR,WARN,DEBUG,INFO,LOG,VERBOSE,DARK,WEBHOOKS,WEBSOCKET
+      - LOG_COLOR=true
+      - LOG_BAILEYS=error
+      - EVENT_EMITTER_MAX_LISTENERS=50
+      - DEL_INSTANCE=false
+      # Database Configuration
+      - DATABASE_PROVIDER=postgresql
+      - DATABASE_CONNECTION_URI=postgresql://postgres:Diever3342@postgres-evoapi:5432/evolution2?schema=public
+      - DATABASE_CONNECTION_CLIENT_NAME=evoapi
+      - DATABASE_SAVE_DATA_INSTANCE=true
+      - DATABASE_SAVE_DATA_NEW_MESSAGE=true
+      - DATABASE_SAVE_MESSAGE_UPDATE=true
+      - DATABASE_SAVE_DATA_CONTACTS=true
+      - DATABASE_SAVE_DATA_CHATS=true
+      - DATABASE_SAVE_DATA_LABELS=true
+      - DATABASE_SAVE_DATA_HISTORIC=true
+      - DATABASE_SAVE_IS_ON_WHATSAPP=true
+      - DATABASE_SAVE_IS_ON_WHATSAPP_DAYS=7
+      - DATABASE_DELETE_MESSAGE=true
+      # RabbitMQ Configuration
+      - RABBITMQ_ENABLED=true
+      - RABBITMQ_URI=amqp://evo-rabbit:Diever3342@rabbitmq:5672/default
+      - RABBITMQ_EXCHANGE_NAME=evolution
+      - RABBITMQ_ERLANG_COOKIE=Diever3342
+      - RABBITMQ_DEFAULT_VHOST=default
+      - RABBITMQ_DEFAULT_USER=evo-rabbit
+      - RABBITMQ_DEFAULT_PASS=Diever3342
+      - RABBITMQ_GLOBAL_ENABLED=false
+      - RABBITMQ_EVENTS_APPLICATION_STARTUP=false
+      - RABBITMQ_EVENTS_INSTANCE_CREATE=false
+      - RABBITMQ_EVENTS_INSTANCE_DELETE=false
+      - RABBITMQ_EVENTS_QRCODE_UPDATED=false
+      - RABBITMQ_EVENTS_MESSAGES_SET=false
+      - RABBITMQ_EVENTS_MESSAGES_UPSERT=false
+      - RABBITMQ_EVENTS_MESSAGES_EDITED=false
+      - RABBITMQ_EVENTS_MESSAGES_UPDATE=false
+      - RABBITMQ_EVENTS_MESSAGES_DELETE=false
+      - RABBITMQ_EVENTS_SEND_MESSAGE=false
+      - RABBITMQ_EVENTS_CONTACTS_SET=false
+      - RABBITMQ_EVENTS_CONTACTS_UPSERT=false
+      - RABBITMQ_EVENTS_CONTACTS_UPDATE=false
+      - RABBITMQ_EVENTS_PRESENCE_UPDATE=false
+      - RABBITMQ_EVENTS_CHATS_SET=false
+      - RABBITMQ_EVENTS_CHATS_UPSERT=false
+      - RABBITMQ_EVENTS_CHATS_UPDATE=false
+      - RABBITMQ_EVENTS_CHATS_DELETE=false
+      - RABBITMQ_EVENTS_GROUPS_UPSERT=false
+      - RABBITMQ_EVENTS_GROUP_UPDATE=false
+      - RABBITMQ_EVENTS_GROUP_PARTICIPANTS_UPDATE=false
+      - RABBITMQ_EVENTS_CONNECTION_UPDATE=false
+      - RABBITMQ_EVENTS_REMOVE_INSTANCE=false
+      - RABBITMQ_EVENTS_LOGOUT_INSTANCE=false
+      - RABBITMQ_EVENTS_CALL=false
+      - RABBITMQ_EVENTS_TYPEBOT_START=false
+      - RABBITMQ_EVENTS_TYPEBOT_CHANGE_STATUS=false
+      # SQS Configuration
+      - SQS_ENABLED=false
+      - SQS_ACCESS_KEY_ID=
+      - SQS_SECRET_ACCESS_KEY=
+      - SQS_ACCOUNT_ID=
+      - SQS_REGION=
+      # Websocket Configuration
+      - WEBSOCKET_ENABLED=false
+      - WEBSOCKET_GLOBAL_EVENTS=false
+      # Pusher Configuration
+      - PUSHER_ENABLED=false
+      - PUSHER_GLOBAL_ENABLED=false
+      - PUSHER_GLOBAL_APP_ID=
+      - PUSHER_GLOBAL_KEY=
+      - PUSHER_GLOBAL_SECRET=
+      - PUSHER_GLOBAL_CLUSTER=
+      - PUSHER_GLOBAL_USE_TLS=true
+      - PUSHER_EVENTS_APPLICATION_STARTUP=true
+      - PUSHER_EVENTS_QRCODE_UPDATED=true
+      - PUSHER_EVENTS_MESSAGES_SET=true
+      - PUSHER_EVENTS_MESSAGES_UPSERT=true
+      - PUSHER_EVENTS_MESSAGES_EDITED=true
+      - PUSHER_EVENTS_MESSAGES_UPDATE=true
+      - PUSHER_EVENTS_MESSAGES_DELETE=true
+      - PUSHER_EVENTS_SEND_MESSAGE=true
+      - PUSHER_EVENTS_CONTACTS_SET=true
+      - PUSHER_EVENTS_CONTACTS_UPSERT=true
+      - PUSHER_EVENTS_CONTACTS_UPDATE=true
+      - PUSHER_EVENTS_PRESENCE_UPDATE=true
+      - PUSHER_EVENTS_CHATS_SET=true
+      - PUSHER_EVENTS_CHATS_UPSERT=true
+      - PUSHER_EVENTS_CHATS_UPDATE=true
+      - PUSHER_EVENTS_CHATS_DELETE=true
+      - PUSHER_EVENTS_GROUPS_UPSERT=true
+      - PUSHER_EVENTS_GROUPS_UPDATE=true
+      - PUSHER_EVENTS_GROUP_PARTICIPANTS_UPDATE=true
+      - PUSHER_EVENTS_CONNECTION_UPDATE=true
+      - PUSHER_EVENTS_LABELS_EDIT=true
+      - PUSHER_EVENTS_LABELS_ASSOCIATION=true
+      - PUSHER_EVENTS_CALL=true
+      - PUSHER_EVENTS_TYPEBOT_START=false
+      - PUSHER_EVENTS_TYPEBOT_CHANGE_STATUS=false
+      # WhatsApp Business API Configuration
+      - WA_BUSINESS_TOKEN_WEBHOOK=evolution
+      - WA_BUSINESS_URL=https://graph.facebook.com
+      - WA_BUSINESS_VERSION=v20.0
+      - WA_BUSINESS_LANGUAGE=en_US
+      # Webhook Configuration
+      - WEBHOOK_GLOBAL_ENABLED=false
+      - WEBHOOK_GLOBAL_URL=''
+      - WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS=false
+      - WEBHOOK_EVENTS_APPLICATION_STARTUP=false
+      - WEBHOOK_EVENTS_QRCODE_UPDATED=true
+      - WEBHOOK_EVENTS_MESSAGES_SET=true
+      - WEBHOOK_EVENTS_MESSAGES_UPSERT=true
+      - WEBHOOK_EVENTS_MESSAGES_EDITED=true
+      - WEBHOOK_EVENTS_MESSAGES_UPDATE=true
+      - WEBHOOK_EVENTS_MESSAGES_DELETE=true
+      - WEBHOOK_EVENTS_SEND_MESSAGE=true
+      - WEBHOOK_EVENTS_CONTACTS_SET=true
+      - WEBHOOK_EVENTS_CONTACTS_UPSERT=true
+      - WEBHOOK_EVENTS_CONTACTS_UPDATE=true
+      - WEBHOOK_EVENTS_PRESENCE_UPDATE=true
+      - WEBHOOK_EVENTS_CHATS_SET=true
+      - WEBHOOK_EVENTS_CHATS_UPSERT=true
+      - WEBHOOK_EVENTS_CHATS_UPDATE=true
+      - WEBHOOK_EVENTS_CHATS_DELETE=true
+      - WEBHOOK_EVENTS_GROUPS_UPSERT=true
+      - WEBHOOK_EVENTS_GROUPS_UPDATE=true
+      - WEBHOOK_EVENTS_GROUP_PARTICIPANTS_UPDATE=true
+      - WEBHOOK_EVENTS_CONNECTION_UPDATE=true
+      - WEBHOOK_EVENTS_REMOVE_INSTANCE=false
+      - WEBHOOK_EVENTS_LOGOUT_INSTANCE=false
+      - WEBHOOK_EVENTS_LABELS_EDIT=true
+      - WEBHOOK_EVENTS_LABELS_ASSOCIATION=true
+      - WEBHOOK_EVENTS_CALL=true
+      - WEBHOOK_EVENTS_TYPEBOT_START=false
+      - WEBHOOK_EVENTS_TYPEBOT_CHANGE_STATUS=false
+      - WEBHOOK_EVENTS_ERRORS=false
+      - WEBHOOK_EVENTS_ERRORS_WEBHOOK=
+      # Session Configuration
+      - CONFIG_SESSION_PHONE_CLIENT=Evolution API
+      - CONFIG_SESSION_PHONE_NAME=Chrome
+      - CONFIG_SESSION_PHONE_VERSION=2.3000.1023204200
+      # QR Code Configuration
+      - QRCODE_LIMIT=30
+      - QRCODE_COLOR='#175197'
+      # Typebot Configuration
+      - TYPEBOT_ENABLED=true
+      - TYPEBOT_API_VERSION=latest
+      # Chatwoot Configuration
+      - CHATWOOT_ENABLED=true
+      - CHATWOOT_MESSAGE_READ=true
+      - CHATWOOT_MESSAGE_DELETE=true
+      - CHATWOOT_BOT_CONTACT=true
+      - CHATWOOT_IMPORT_DATABASE_CONNECTION_URI='postgresql://postgres:Diever3342@chatwoot-postgres:5432/chatwoot?sslmode=disable'
+      - CHATWOOT_IMPORT_PLACEHOLDER_MEDIA_MESSAGE=true
+      # OpenAI Configuration
+      - OPENAI_ENABLED=false
+      # Dify Configuration
+      - DIFY_ENABLED=false
+      # Cache Configuration
+      - CACHE_REDIS_ENABLED=true
+      - CACHE_REDIS_URI=redis://redis-server:6379/3
+      - CACHE_REDIS_TTL=604800
+      - CACHE_REDIS_PREFIX_KEY=evolution
+      - CACHE_REDIS_SAVE_INSTANCES=false
+      - CACHE_LOCAL_ENABLED=false
+      # S3 Configuration
+      - S3_ENABLED=false
+      - S3_ACCESS_KEY=
+      - S3_SECRET_KEY=
+      - S3_BUCKET=evolution
+      - S3_PORT=443
+      - S3_ENDPOINT=s3.domain.com
+      - S3_REGION=eu-west-3
+      - S3_USE_SSL=true
+      # Authentication
+      - AUTHENTICATION_API_KEY=COcQyuOO7j7n7SsyEZqTmARXOPb08TAw
+      - AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES=true
+      - LANGUAGE=es
+
+  postgres-evoapi:
+    image: postgres:15
+    
+    networks:
+      - backend
+      
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+        
+    environment:
+      - POSTGRES_DB=evolution2
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=Diever3342
+      
+    volumes:
+      - evolution_postgres_data:/var/lib/postgresql/data
+ 
+  rabbitmq:
+    image: rabbitmq:management
+    entrypoint: docker-entrypoint.sh
+    command: rabbitmq-server
+    
+    deploy:
+      mode: replicated
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.rabbitmq.rule=Host(`rabbitmq-evoapi.pbxai.online`)"
+        - "traefik.http.routers.rabbitmq.entrypoints=websecure"
+        - "traefik.http.routers.rabbitmq.tls=true"
+        - "traefik.http.routers.rabbitmq.tls.certresolver=le"
+        - "traefik.http.services.rabbitmq.loadbalancer.server.port=15672"
+        - "traefik.docker.network=frontend"
+        
+    volumes:
+      - evolution_rabbitmq_data:/var/lib/rabbitmq/
+      
+    environment:
+      - RABBITMQ_ERLANG_COOKIE=Diever3342
+      - RABBITMQ_DEFAULT_VHOST=default
+      - RABBITMQ_DEFAULT_USER=evo-rabbit
+      - RABBITMQ_DEFAULT_PASS=Diever3342
+      
+    networks:
+      - frontend
+      - backend
+
+networks:
+  frontend:
+    external: true
+  backend:
+    external: true
+
+volumes:
+  evolution_instances:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/evoapi/evolution_instances
+      o: bind
+  
+  evolution_postgres_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/evoapi/evolution_postgres_data
+      o: bind
+  
+  evolution_rabbitmq_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: /home/docker/evoapi/rabbitmq_data
+      o: bind

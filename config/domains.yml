@@ -1,0 +1,10 @@
+main_domain:
+subdomains:
+  traefik: traefik
+  portainer: portainer
+  redisinsight: redis
+  n8n: n8n
+  n8n_webhook: webhook.n8n
+  chatwoot: chatwoot
+  evoapi: evoapi
+  rabbitmq_evoapi: rabbitmq-evoapi
