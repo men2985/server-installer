@@ -10,7 +10,6 @@ Todo vive bajo `/home` para facilitar **backup** y **restore**.
 En tu VPS (ejecuta como **root**; el script instalará las dependencias necesarias automáticamente):
 
 ```bash
-sudo su -
 bash <(curl -fsSL https://raw.githubusercontent.com/men2985/server-installer/main/install.sh)
 ```
 
